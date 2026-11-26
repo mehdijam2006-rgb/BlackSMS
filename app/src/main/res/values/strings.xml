@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BlackSMS</string>
+    <string name="cd_shield_banner">لوگوی سپر امنیتی BlackSMS</string>
+    <string name="cd_mms_attachment">تصویر پیوست پیام</string>
+</resources>

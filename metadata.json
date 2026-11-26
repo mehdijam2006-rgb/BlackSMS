@@ -1,0 +1,6 @@
+{
+  "name": "BlackSMS",
+  "description": "BlackSMS - پیام‌رسان پیش‌فرض و ضداسپم هوشمند فارسی و انگلیسی با فیلتر فرستندگان متنی و پیام‌های مزاحم",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
