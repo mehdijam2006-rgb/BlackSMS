@@ -8,13 +8,14 @@ BlackSMS is an Android SMS app focused on privacy and giving users control over 
 
 ## Project Overview | معرفی پروژه
 
-BlackSMS aims to provide a clean messaging experience with smart spam filtering, sender blocking, customizable filtering rules, and message quarantine.
+BlackSMS aims to provide a clean messaging experience with smart spam filtering, sender blocking, customizable filtering rules, adaptive learning, and message quarantine.
 
-هدف BlackSMS ارائه تجربه‌ای ساده برای مدیریت پیامک‌ها، فیلتر هوشمند پیام‌های مزاحم، مسدودسازی فرستندگان، قوانین فیلترینگ شخصی و قرنطینه پیام‌هاست.
+هدف BlackSMS ارائه تجربه‌ای ساده برای مدیریت پیامک‌ها، فیلتر هوشمند پیام‌های مزاحم، مسدودسازی فرستندگان، یادگیری تطبیقی، قوانین فیلترینگ شخصی و قرنطینه پیام‌هاست.
 
 ## Planned Features | قابلیت‌های در دست توسعه
 
 - **Smart Spam Filtering | فیلتر هوشمند اسپم:** Detect and filter suspicious or unwanted SMS messages.
+- **Adaptive Learning | یادگیری تطبیقی:** Learn from the messages and senders users block, identify similar patterns in future messages, and predict unwanted SMS. Based on confidence and user preferences, messages may be automatically blocked or moved to quarantine. User corrections can help improve future predictions.
 - **Sender Blocking | مسدودسازی فرستنده:** Block unwanted phone numbers, sender IDs, and non-standard senders.
 - **Custom Rules | قوانین شخصی:** Filter messages using custom keywords and patterns.
 - **Message Quarantine | قرنطینه پیام‌ها:** Keep filtered messages separated from the main inbox.
