@@ -129,7 +129,8 @@ object SenderClassifier {
     )
     private val promoPrefixes = listOf(
         "ad-", "ads", "ad_", "promo", "info", "sms", "offer", "tabligh",
-        "club", "notify", "alert", "news", "sale", "shop"
+        "club", "notify", "alert", "news", "sale", "shop",
+        "app-", "app_", "myket", "bazaar", "cafebazaar", "sibapp", "sibche", "market", "store", "payam"
     )
 
     fun extractThreadKey(senderRaw: String): String {

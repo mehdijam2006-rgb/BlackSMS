@@ -16,6 +16,8 @@ import com.example.sms.DeviceContactsManager
 import com.example.sms.DeviceSmsRecord
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.theme.AppThemeMode
+import com.example.ui.viewmodel.InboxFilterTab
+import com.example.ui.viewmodel.ThreadSearchHelper
 import com.example.util.SmsNotificationHelper
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -403,5 +405,150 @@ class ExampleRobolectricTest {
         repository.setLastSeenBlockedCount(totalBlocked)
         val settings = repository.settings.first()
         assertEquals(0, (totalBlocked - settings.lastSeenBlockedCount).coerceAtLeast(0))
+    }
+
+    @Test
+    fun `inbox search matches older message bodies and archived conversations`() = runBlocking {
+        repository.ensureSeeded()
+        val now = System.currentTimeMillis()
+        repository.syncDeviceRecords(
+            listOf(
+                DeviceSmsRecord(
+                    systemId = 801L,
+                    senderRaw = "+989121110001",
+                    body = "شماره فاکتور مخفی ۸۸۹۹ در این پیام قدیمی است",
+                    timestamp = now - 60_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 1
+                ),
+                DeviceSmsRecord(
+                    systemId = 802L,
+                    senderRaw = "+989121110001",
+                    body = "ممنون فردا میام",
+                    timestamp = now - 10_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 1
+                ),
+                DeviceSmsRecord(
+                    systemId = 803L,
+                    senderRaw = "+989122220002",
+                    body = "بلیت قطار مشهد برای هفته آینده",
+                    timestamp = now - 5_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 2
+                )
+            )
+        )
+        val archivedThreadKey = com.example.domain.model.SenderClassifier.extractThreadKey("+989122220002")
+        repository.setThreadArchived(archivedThreadKey, true)
+
+        val threads = repository.inboxThreads.first()
+        val allMessages = repository.allInboxAndArchivedMessages.first()
+
+        // Matches older message inside active thread with matchedSnippet
+        val olderHit = ThreadSearchHelper.filterThreads(threads, allMessages, "فاکتور مخفی", InboxFilterTab.ALL)
+        assertEquals(1, olderHit.size)
+        assertTrue(olderHit.single().matchedSnippet?.contains("۸۸۹۹") == true)
+
+        // Matches archived thread cleanly even when searching under ALL tab
+        val archivedHit = ThreadSearchHelper.filterThreads(threads, allMessages, "قطار مشهد", InboxFilterTab.ALL)
+        assertEquals(1, archivedHit.size)
+        assertTrue(archivedHit.single().isArchived)
+    }
+
+    @Test
+    fun `smart engine blocks promotional app campaigns while keeping clean app OTPs`() = runBlocking {
+        repository.ensureSeeded()
+        repository.setSmartFilterLevel(SmartFilterLevel.NORMAL)
+
+        val appPromo = repository.processAndStoreIncomingMessage(
+            senderRaw = "app-gift",
+            body = "با نصب اپلیکیشن ما از کافه بازار ۵۰۰ هزار تومان هدیه ثبت نام بگیرید: https://cafebazaar.ir/app/ir.promo"
+        )!!
+        assertTrue(appPromo.decision.shouldBlock)
+        assertEquals(BlockSource.SMART_ENGINE, appPromo.decision.blockSource)
+
+        val cleanAppOtp = repository.processAndStoreIncomingMessage(
+            senderRaw = "5000400",
+            body = "کد ورود به اپلیکیشن اسنپ: ۴۸۲۹۱۰"
+        )!!
+        assertFalse(cleanAppOtp.decision.shouldBlock)
+    }
+
+    @Test
+    fun `behavioral learning adapts from user blocking habits and blocks matching behavior automatically`() = runBlocking {
+        repository.ensureSeeded()
+        repository.setSmartFilterLevel(SmartFilterLevel.NORMAL)
+
+        // User blocks 2 messages that share behavioral pattern: alphanumeric sender + messenger @handle + promo urge + length
+        val b1 = repository.processAndStoreIncomingMessage(
+            senderRaw = "90001001",
+            body = "عضویت فوری در کانال ویژه @vip_channel_one برای مشاهده جدول تخفیف‌ها"
+        )!!
+        val b2 = repository.processAndStoreIncomingMessage(
+            senderRaw = "90002002",
+            body = "اطلاع‌رسانی تخفیف ویژه در کانال رسمی @super_deals_now ظرفیت محدود"
+        )!!
+        repository.blockSingleMessage(b1.messageId, alsoBlacklistSender = false)
+        repository.blockSingleMessage(b2.messageId, alsoBlacklistSender = false)
+
+        // New message from brand-new sender sharing the user's blocked behavioral signature (@handle + promo)
+        val b3 = repository.processAndStoreIncomingMessage(
+            senderRaw = "90003003",
+            body = "دعوت به کانال اختصاصی @mega_offer_club تخفیف استثنایی امروز برای شما"
+        )!!
+        assertTrue(b3.decision.shouldBlock)
+        assertEquals(BlockSource.SMART_ENGINE, b3.decision.blockSource)
+    }
+
+    @Test
+    fun `syncDeviceRecords preserves and updates per-SIM slot 1 and slot 2 accurately`() = runBlocking {
+        repository.ensureSeeded()
+        val now = System.currentTimeMillis()
+        repository.syncDeviceRecords(
+            listOf(
+                DeviceSmsRecord(
+                    systemId = 9001L,
+                    senderRaw = "+989123334455",
+                    body = "پیام روی سیم ۱",
+                    timestamp = now - 10_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 1
+                ),
+                DeviceSmsRecord(
+                    systemId = 9002L,
+                    senderRaw = "+989123334466",
+                    body = "پیام روی سیم ۲",
+                    timestamp = now - 5_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 2
+                )
+            )
+        )
+
+        val sim2Thread = repository.inboxThreads.first().first { it.senderDisplay == "+989123334466" }
+        assertEquals(2, sim2Thread.lastSimSlot)
+
+        // Re-sync corrects an existing record if SIM slot changed
+        repository.syncDeviceRecords(
+            listOf(
+                DeviceSmsRecord(
+                    systemId = 9001L,
+                    senderRaw = "+989123334455",
+                    body = "پیام روی سیم ۱",
+                    timestamp = now - 10_000L,
+                    isOutgoing = false,
+                    isRead = true,
+                    simSlot = 2
+                )
+            )
+        )
+        val updatedSimThread = repository.inboxThreads.first().first { it.senderDisplay == "+989123334455" }
+        assertEquals(2, updatedSimThread.lastSimSlot)
     }
 }

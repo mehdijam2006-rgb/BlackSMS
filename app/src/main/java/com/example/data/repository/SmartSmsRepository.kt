@@ -73,6 +73,7 @@ class SmartSmsRepository(
             )
     }
 
+    val allInboxAndArchivedMessages: Flow<List<MessageEntity>> = messageDao.observeInboxMessages()
     val blockedMessages: Flow<List<MessageEntity>> = messageDao.observeBlockedMessages()
     val unreadInboxCount: Flow<Int> = messageDao.observeUnreadInboxCount()
     val blockedCount: Flow<Int> = messageDao.observeBlockedCount()
@@ -123,7 +124,10 @@ class SmartSmsRepository(
      */
     suspend fun syncDeviceRecords(records: List<DeviceSmsRecord>): Int {
         if (records.isEmpty()) return 0
-        val existingIds = messageDao.getAllSyncedSystemIds().toHashSet()
+        val existingSyncedMap = messageDao.getAllSyncedMessages()
+            .mapNotNull { msg -> msg.systemSmsId?.let { it to msg } }
+            .toMap()
+            .toMutableMap()
         val rules = filterRuleDao.getAllRulesOnce()
         val listEntries = listEntryDao.getAllEntriesOnce()
         val currentSettings = settingsPrefs.getSettingsOnce()
@@ -134,7 +138,13 @@ class SmartSmsRepository(
 
         var importedCount = 0
         for (rec in records.sortedBy { it.timestamp }) {
-            if (rec.systemId in existingIds) continue
+            val alreadySynced = existingSyncedMap[rec.systemId]
+            if (alreadySynced != null) {
+                if (rec.simSlot > 0 && alreadySynced.simSlot != rec.simSlot) {
+                    messageDao.updateSimSlot(alreadySynced.id, rec.simSlot)
+                }
+                continue
+            }
             val threadKey = SenderClassifier.extractThreadKey(rec.senderRaw)
             val senderType = SenderClassifier.classify(rec.senderRaw)
             val hash = computeDedupHash(threadKey, rec.body)
@@ -150,30 +160,34 @@ class SmartSmsRepository(
                 if (existingMatch.systemSmsId == null) {
                     messageDao.attachSystemSmsId(existingMatch.id, rec.systemId)
                 }
-                existingIds.add(rec.systemId)
+                if (rec.simSlot > 0 && existingMatch.simSlot != rec.simSlot) {
+                    messageDao.updateSimSlot(existingMatch.id, rec.simSlot)
+                }
+                existingSyncedMap[rec.systemId] = existingMatch.copy(systemSmsId = rec.systemId, simSlot = rec.simSlot)
                 continue
             }
 
             if (rec.isOutgoing) {
-                messageDao.insertMessage(
-                    MessageEntity(
-                        systemSmsId = rec.systemId,
-                        threadKey = threadKey,
-                        senderRaw = rec.senderRaw.trim(),
-                        senderType = senderType,
-                        body = rec.body,
-                        timestamp = rec.timestamp,
-                        isOutgoing = true,
-                        isRead = true,
-                        isArchived = false,
-                        isBlocked = false,
-                        deliveryStatus = DeliveryStatus.SENT,
-                        partCount = SmsPartCalculator.calculateParts(rec.body),
-                        isMms = rec.isMms,
-                        attachmentUri = rec.attachmentUri,
-                        dedupHash = hash
-                    )
+                val inserted = MessageEntity(
+                    systemSmsId = rec.systemId,
+                    threadKey = threadKey,
+                    senderRaw = rec.senderRaw.trim(),
+                    senderType = senderType,
+                    body = rec.body,
+                    timestamp = rec.timestamp,
+                    isOutgoing = true,
+                    isRead = true,
+                    isArchived = false,
+                    isBlocked = false,
+                    simSlot = rec.simSlot,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    partCount = SmsPartCalculator.calculateParts(rec.body),
+                    isMms = rec.isMms,
+                    attachmentUri = rec.attachmentUri,
+                    dedupHash = hash
                 )
+                val id = messageDao.insertMessage(inserted)
+                existingSyncedMap[rec.systemId] = inserted.copy(id = id)
             } else {
                 val decision = SmsFilterEngine.evaluate(
                     senderRaw = rec.senderRaw,
@@ -184,37 +198,37 @@ class SmartSmsRepository(
                     recentIncomingBodies = recentBodies,
                     learnedBlockedExamples = learnedBlocked
                 )
-                messageDao.insertMessage(
-                    MessageEntity(
-                        systemSmsId = rec.systemId,
-                        threadKey = threadKey,
-                        senderRaw = rec.senderRaw.trim(),
-                        senderType = senderType,
-                        body = rec.body,
-                        timestamp = rec.timestamp,
-                        isOutgoing = false,
-                        isRead = rec.isRead,
-                        isArchived = false,
-                        isBlocked = decision.shouldBlock,
-                        blockSource = decision.blockSource,
-                        blockReason = if (decision.shouldBlock) decision.reasonFa else null,
-                        matchedRuleId = decision.matchedRuleId,
-                        smartScore = decision.smartAnalysis.score,
-                        smartSignals = decision.smartAnalysis.signals.joinToString(" | "),
-                        deliveryStatus = DeliveryStatus.NONE,
-                        partCount = SmsPartCalculator.calculateParts(rec.body),
-                        isMms = rec.isMms,
-                        attachmentUri = rec.attachmentUri,
-                        dedupHash = hash
-                    )
+                val inserted = MessageEntity(
+                    systemSmsId = rec.systemId,
+                    threadKey = threadKey,
+                    senderRaw = rec.senderRaw.trim(),
+                    senderType = senderType,
+                    body = rec.body,
+                    timestamp = rec.timestamp,
+                    isOutgoing = false,
+                    isRead = rec.isRead,
+                    isArchived = false,
+                    isBlocked = decision.shouldBlock,
+                    blockSource = decision.blockSource,
+                    blockReason = if (decision.shouldBlock) decision.reasonFa else null,
+                    matchedRuleId = decision.matchedRuleId,
+                    smartScore = decision.smartAnalysis.score,
+                    smartSignals = decision.smartAnalysis.signals.joinToString(" | "),
+                    simSlot = rec.simSlot,
+                    deliveryStatus = DeliveryStatus.NONE,
+                    partCount = SmsPartCalculator.calculateParts(rec.body),
+                    isMms = rec.isMms,
+                    attachmentUri = rec.attachmentUri,
+                    dedupHash = hash
                 )
+                val id = messageDao.insertMessage(inserted)
+                existingSyncedMap[rec.systemId] = inserted.copy(id = id)
                 if (decision.shouldBlock) {
                     learnedBlocked.add(0, BlockedExample(rec.senderRaw, rec.body))
                 }
                 decision.matchedRuleId?.let { filterRuleDao.incrementBlockedCount(it) }
                 decision.matchedListEntryId?.let { listEntryDao.incrementHitCount(it) }
             }
-            existingIds.add(rec.systemId)
             importedCount++
         }
         return importedCount
@@ -243,7 +257,8 @@ class SmartSmsRepository(
         isMms: Boolean = false,
         attachmentUri: String? = null,
         customTimestamp: Long? = null,
-        systemSmsId: Long? = null
+        systemSmsId: Long? = null,
+        simSlot: Int = 1
     ): ProcessedMessageResult? {
         val trimmedBody = body.trim()
         if (trimmedBody.isEmpty() && attachmentUri == null) return null
@@ -289,7 +304,7 @@ class SmartSmsRepository(
             matchedRuleId = decision.matchedRuleId,
             smartScore = decision.smartAnalysis.score,
             smartSignals = decision.smartAnalysis.signals.joinToString(" | "),
-            simSlot = 1,
+            simSlot = simSlot,
             deliveryStatus = DeliveryStatus.NONE,
             partCount = SmsPartCalculator.calculateParts(trimmedBody),
             isMms = isMms || attachmentUri != null,

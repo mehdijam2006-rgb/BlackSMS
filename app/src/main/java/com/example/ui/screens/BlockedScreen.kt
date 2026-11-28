@@ -69,10 +69,16 @@ import com.example.ui.components.BlockSourceBadge
 import com.example.ui.components.EmptyStateBanner
 import com.example.ui.components.PersianFormatters
 import com.example.ui.components.SenderAvatar
+import com.example.ui.components.StickerIconBadge
 import com.example.ui.components.UriBitmapImage
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalStrings
+import com.example.ui.theme.AmberGold
+import com.example.ui.theme.ElectricIndigo
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.RoseCrimson
+import com.example.ui.theme.SafeEmerald
+import com.example.ui.theme.SkyBlue
 import com.example.ui.viewmodel.BlockedFilterTab
 
 @Composable
@@ -309,7 +315,7 @@ fun BlockedScreen(
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             modifier = Modifier.testTag("blocked_view_copy_btn")
                         ) {
-                            Icon(AppIcons.Copy, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(AppIcons.Copy, contentDescription = null, tint = SkyBlue, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text(strings.bubbleActionCopy, style = MaterialTheme.typography.labelMedium)
                         }
@@ -318,7 +324,7 @@ fun BlockedScreen(
                             onClick = { showExplanation = !showExplanation },
                             modifier = Modifier.testTag("blocked_request_explanation_btn")
                         ) {
-                            Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Info, contentDescription = null, tint = AmberGold, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text(
                                 text = if (showExplanation) strings.hideExplanationBtn else strings.requestExplanationBtn,
@@ -396,6 +402,14 @@ fun BlockedScreen(
     pendingDeleteSingleId?.let { id ->
         AlertDialog(
             onDismissRequest = { pendingDeleteSingleId = null },
+            icon = {
+                StickerIconBadge(
+                    icon = Icons.Default.Delete,
+                    tint = RoseCrimson,
+                    size = 42.dp,
+                    iconSize = 24.dp
+                )
+            },
             title = { Text(strings.confirmDeleteSingleTitle) },
             text = { Text(strings.confirmDeleteSingleBody) },
             confirmButton = {
@@ -404,7 +418,7 @@ fun BlockedScreen(
                         onDeleteSingle(id)
                         pendingDeleteSingleId = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseCrimson)
                 ) {
                     Text(strings.deleteForever)
                 }
@@ -420,6 +434,14 @@ fun BlockedScreen(
     if (showBatchDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteConfirm = false },
+            icon = {
+                StickerIconBadge(
+                    icon = Icons.Default.Delete,
+                    tint = RoseCrimson,
+                    size = 42.dp,
+                    iconSize = 24.dp
+                )
+            },
             title = {
                 Text(
                     PersianFormatters.formatDigits(
@@ -435,7 +457,7 @@ fun BlockedScreen(
                         onDeleteSelected()
                         showBatchDeleteConfirm = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseCrimson)
                 ) {
                     Text(strings.deleteForever)
                 }
@@ -537,7 +559,9 @@ private fun BlockedMessageCard(
                     onClick = onView,
                     modifier = Modifier.testTag("view_blocked_btn_${message.id}")
                 ) {
-                    Text(strings.viewMessageBtn, style = MaterialTheme.typography.labelMedium)
+                    Icon(Icons.Default.Info, contentDescription = null, tint = SkyBlue, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(strings.viewMessageBtn, color = SkyBlue, style = MaterialTheme.typography.labelMedium)
                 }
             }
 
@@ -558,7 +582,7 @@ private fun BlockedMessageCard(
                     modifier = Modifier.testTag("restore_btn_${message.id}"),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Icon(AppIcons.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.Restore, contentDescription = null, tint = SafeEmerald, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text(strings.restore, style = MaterialTheme.typography.labelMedium)
                 }
@@ -569,7 +593,7 @@ private fun BlockedMessageCard(
                         modifier = Modifier.testTag("whitelist_btn_${message.id}"),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                     ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ElectricIndigo, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(strings.allowSender, style = MaterialTheme.typography.labelMedium)
                     }
@@ -581,10 +605,10 @@ private fun BlockedMessageCard(
                     onClick = onRequestDelete,
                     modifier = Modifier.testTag("delete_blocked_btn_${message.id}")
                 ) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = strings.deleteForever,
-                        tint = MaterialTheme.colorScheme.error
+                    StickerIconBadge(
+                        icon = Icons.Default.Delete,
+                        tint = RoseCrimson,
+                        contentDescription = strings.deleteForever
                     )
                 }
             }

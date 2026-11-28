@@ -10,19 +10,43 @@ data class BlockedExample(
     val body: String
 )
 
+private enum class LengthBucket { SHORT, MEDIUM, LONG }
+
+private data class BehavioralSignature(
+    val senderType: SenderType,
+    val hasUrl: Boolean,
+    val hasHandle: Boolean,
+    val hasAppPromo: Boolean,
+    val hasPromoTerm: Boolean,
+    val hasCancelCue: Boolean,
+    val hasUrgency: Boolean,
+    val lengthBucket: LengthBucket
+)
+
 /**
  * Local, offline, multi-signal weighted scoring engine optimized for Persian SMS,
- * with Adaptive Learning from messages the user has previously marked/blocked as spam.
+ * with:
+ * - Promotional App / Store-Link / Referral Spam Detection
+ * - Behavioral Pattern & User-Blocking Learning (adapts from user blocks vs. allowed inbox messages)
  */
 object SmartScoringEngine {
 
     private val urlRegex = Regex(
-        """(?i)\b((https?://|www\.)\S+|[a-z0-9-]+\.(ir|com|net|org|xyz|top|click|tk|ml|ga|cf|info|co|me|link|shop|online)(/\S*)?)\b"""
+        """(?i)\b((https?://|www\.)\S+|[a-z0-9-]+\.(ir|com|net|org|xyz|top|click|tk|ml|ga|cf|info|co|me|link|shop|online|app)(/\S*)?)\b"""
     )
+
+    private val handleRegex = Regex("""@[a-zA-Z0-9_]{3,}\b""")
 
     private val shortenedDomains = listOf(
         "bit.ly", "b2n.ir", "yun.ir", "zil.ink", "tinyurl.com", "is.gd",
-        "cutt.ly", "t.co", "goo.gl", "ow.ly", "rb.gy", "shorturl.at", "t.me/"
+        "cutt.ly", "t.co", "goo.gl", "ow.ly", "rb.gy", "shorturl.at", "t.me/",
+        "rubika.ir/", "eitaa.com/", "bale.ai/"
+    )
+
+    private val appStoreDomains = listOf(
+        "cafebazaar.ir", "bazaar.ir", "myket.ir", "play.google.com", "apps.apple.com",
+        "sibapp.com", "sibche.com", "anardoni.com", "iapps.ir", "app.link",
+        "onelink.me", "apkpure.com", ".apk"
     )
 
     private val suspiciousTlds = listOf(".xyz", ".top", ".click", ".tk", ".ml", ".ga", ".cf", ".work")
@@ -32,7 +56,23 @@ object SmartScoringEngine {
         "تخفیف", "فروش ویژه", "حراج", "جایزه", "قرعه کشی", "قرعه‌کشی",
         "برنده", "لغو 11", "لغو11", "ارسال عدد", "ثبت نام رایگان", "ثبت‌نام رایگان",
         "کد تخفیف", "خرید اقساطی", "وام فوری", "شارژ رایگان", "سود تضمینی",
-        "پیشنهاد ویژه", "فقط امروز", "ظرفیت محدود", "درصد تخفیف", "تبلیغ"
+        "پیشنهاد ویژه", "فقط امروز", "ظرفیت محدود", "درصد تخفیف", "تبلیغ",
+        "جشنواره", "کسب درآمد"
+    )
+
+    private val promoAppTerms = listOf(
+        "نصب اپلیکیشن", "دانلود اپلیکیشن", "نصب برنامه", "دانلود برنامه",
+        "اپلیکیشن ما", "اپ جدید", "نسخه جدید اپلیکیشن", "نسخه جدید برنامه",
+        "کد معرف", "دعوت از دوستان", "دعوت دوستان", "هدیه ثبت نام",
+        "هدیه ورود", "امتیاز در اپلیکیشن", "اپلیکیشن تبلیغاتی",
+        "نصب رایگان", "دانلود مستقیم", "از کافه بازار", "کافه بازار",
+        "از مایکت", "مایکت", "سیب اپ", "سیبچه", "باشگاه مشتریان",
+        "install our app", "download the app", "download our app",
+        "download app", "referral code", "invite friends", "promo app"
+    )
+
+    private val cancelCues = listOf(
+        "لغو 11", "لغو11", "ارسال عدد", "لغو اشتراک", "unsubscribe", "reply stop"
     )
 
     private val phishingOrgTerms = listOf(
@@ -54,7 +94,7 @@ object SmartScoringEngine {
     private val stopWords = setOf(
         "سلام", "درود", "خوب", "خوبی", "برای", "است", "هست", "بود", "شود", "شد",
         "شما", "من", "ما", "این", "آن", "های", "هایی", "لطف", "لطفا", "ممنون",
-        "تشکر", "باشید", "دارد", "دارم", "کنید", "بکنید", "می", "های", "هم", "یا",
+        "تشکر", "باشید", "دارد", "دارم", "کنید", "بکنید", "می", "هم", "یا",
         "که", "را", "از", "به", "در", "با", "تا", "بر", "و", "ای",
         "the", "and", "for", "you", "your", "are", "with", "this", "that", "from", "have"
     )
@@ -96,9 +136,10 @@ object SmartScoringEngine {
             SenderType.PHONE_NUMBER -> Unit
         }
 
-        // 2. Link & suspicious URL analysis
+        // 2. Link, app-store download & suspicious URL analysis
         val urls = extractUrls(body)
         val hasAnyUrl = urls.isNotEmpty()
+        var hasAppStoreLink = false
         if (hasAnyUrl) {
             score += 12
             signals += "وجود لینک در متن پیام (+۱۲)"
@@ -112,6 +153,15 @@ object SmartScoringEngine {
                 signals += "لینک کوتاه‌شده یا پیام‌رسان (+۲۶)"
             }
 
+            hasAppStoreLink = urls.any { url ->
+                val lower = url.lowercase()
+                appStoreDomains.any { lower.contains(it) }
+            }
+            if (hasAppStoreLink) {
+                score += 32
+                signals += "لینک دانلود یا نصب اپلیکیشن (+۳۲)"
+            }
+
             val hasSuspiciousTld = urls.any { url ->
                 val lower = url.lowercase()
                 suspiciousTlds.any { lower.contains(it) } || ipUrlRegex.containsMatchIn(lower)
@@ -122,12 +172,26 @@ object SmartScoringEngine {
             }
         }
 
+        val hasMessengerHandle = handleRegex.containsMatchIn(body)
+        if (hasMessengerHandle) {
+            score += 14
+            signals += "حاوی آیدی تبلیغاتی (@) (+۱۴)"
+        }
+
         // 3. Promotional / bulk spam terms
         val matchedPromo = promoTerms.filter { normalizedBody.contains(PersianTextNormalizer.normalizePersian(it)) }
         if (matchedPromo.isNotEmpty()) {
             val promoPoints = (matchedPromo.size * 14).coerceAtMost(40)
             score += promoPoints
             signals += "الگوی تبلیغاتی (${matchedPromo.take(2).joinToString("، ")}) (+$promoPoints)"
+        }
+
+        // 3b. Promotional app / referral / install campaign detection
+        val matchedAppPromo = promoAppTerms.filter { normalizedBody.contains(PersianTextNormalizer.normalizePersian(it)) }
+        if (matchedAppPromo.isNotEmpty()) {
+            val appPromoPoints = (matchedAppPromo.size * 26).coerceAtMost(46)
+            score += appPromoPoints
+            signals += "تشخیص اپلیکیشن تبلیغاتی (${matchedAppPromo.take(2).joinToString("، ")}) (+$appPromoPoints)"
         }
 
         // 4. Bank / organization impersonation risk
@@ -161,9 +225,21 @@ object SmartScoringEngine {
             signals += "تکرار محتوای مشابه پیام‌های انبوه اخیر (+۲۴)"
         }
 
-        // 7. Adaptive Local Learning from user's previously blocked messages
+        // 7. Adaptive Behavioral & User-Blocking Learning
         var learnedMatch = false
-        if (learnedBlockedExamples.isNotEmpty() && normalizedBody.length >= 10) {
+        var behavioralMatch = false
+        val incomingSig = extractBehavioralSignature(
+            senderType = senderType,
+            rawBody = body,
+            normalizedBody = normalizedBody,
+            hasUrl = hasAnyUrl,
+            hasHandle = hasMessengerHandle,
+            hasAppPromo = hasAppStoreLink || matchedAppPromo.isNotEmpty(),
+            hasPromoTerm = matchedPromo.isNotEmpty(),
+            hasUrgency = matchedUrgency.isNotEmpty()
+        )
+
+        if (learnedBlockedExamples.isNotEmpty() && normalizedBody.length >= 8) {
             val incomingTokens = extractMeaningfulTokens(normalizedBody)
             val incomingTemplate = stripVariableNumbers(normalizedBody)
 
@@ -171,7 +247,7 @@ object SmartScoringEngine {
             var similarBlockedCount = 0
             for (example in learnedBlockedExamples) {
                 val exNorm = PersianTextNormalizer.normalizePersian(example.body)
-                if (exNorm.length < 10) continue
+                if (exNorm.length < 8) continue
                 val exTemplate = stripVariableNumbers(exNorm)
                 val tokSim = tokenSimilarity(incomingTemplate, exTemplate)
                 val charSim = trigramSimilarity(incomingTemplate, exTemplate)
@@ -193,7 +269,6 @@ object SmartScoringEngine {
                 learnedMatch = true
                 signals += "شباهت نسبی با پیام مسدودشده قبلی (+۴۰)"
             } else if (learnedBlockedExamples.size >= 2 && incomingTokens.isNotEmpty()) {
-                // Recurring vocabulary learned from >= 2 user-blocked messages (excluding common allowed words)
                 val allowedTokens = recentIncomingBodies
                     .flatMap { extractMeaningfulTokens(PersianTextNormalizer.normalizePersian(it)) }
                     .groupingBy { it }
@@ -218,7 +293,7 @@ object SmartScoringEngine {
                 }
             }
 
-            // Learned URL domain overlap from blocked messages
+            // Learned URL domain & handle overlap from blocked messages
             if (urls.isNotEmpty()) {
                 val incomingDomains = urls.mapNotNull { extractDomain(it) }.toSet()
                 val blockedDomains = learnedBlockedExamples
@@ -232,7 +307,19 @@ object SmartScoringEngine {
                 }
             }
 
-            // Learned sender prefix pattern (e.g. bulk short codes or promo prefixes blocked >= 2 times)
+            if (hasMessengerHandle) {
+                val incomingHandles = handleRegex.findAll(body).map { it.value.lowercase() }.toSet()
+                val blockedHandles = learnedBlockedExamples
+                    .flatMap { handleRegex.findAll(it.body).map { m -> m.value.lowercase() } }
+                    .toSet()
+                if (incomingHandles.any { it in blockedHandles }) {
+                    score += 44
+                    learnedMatch = true
+                    signals += "آیدی تکراری مسدودشده توسط کاربر (+۴۴)"
+                }
+            }
+
+            // Learned sender prefix pattern (bulk short codes / promo prefixes / number ranges)
             val senderKey = SenderClassifier.extractThreadKey(senderRaw)
             if (senderKey.length >= 4) {
                 val prefix = senderKey.take(4)
@@ -241,24 +328,105 @@ object SmartScoringEngine {
                     k.length >= 4 && k.startsWith(prefix, ignoreCase = true)
                 }
                 if (prefixBlockCount >= 2) {
-                    score += 20
+                    val prefixPts = if (prefixBlockCount >= 3) 34 else 22
+                    score += prefixPts
                     learnedMatch = true
-                    signals += "پیش‌شماره یا الگوی فرستنده مسدودشده (+۲۰)"
+                    signals += "پیش‌شماره یا الگوی فرستنده مسدودشده (+$prefixPts)"
+                }
+            }
+
+            // Behavioral Pattern Learning: learn recurring structural/sender/action habits from user blocks
+            if (learnedBlockedExamples.size >= 2) {
+                val blockedSigs = learnedBlockedExamples.map { ex ->
+                    val exType = SenderClassifier.classify(ex.senderRaw)
+                    val exNorm = PersianTextNormalizer.normalizePersian(ex.body)
+                    val exUrls = extractUrls(ex.body)
+                    val exPromo = promoTerms.any { exNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    val exAppPromo = exUrls.any { u -> appStoreDomains.any { u.lowercase().contains(it) } } ||
+                        promoAppTerms.any { exNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    val exUrgency = urgencyTerms.any { exNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    extractBehavioralSignature(
+                        senderType = exType,
+                        rawBody = ex.body,
+                        normalizedBody = exNorm,
+                        hasUrl = exUrls.isNotEmpty(),
+                        hasHandle = handleRegex.containsMatchIn(ex.body),
+                        hasAppPromo = exAppPromo,
+                        hasPromoTerm = exPromo,
+                        hasUrgency = exUrgency
+                    )
+                }
+
+                val allowedSigs = recentIncomingBodies.map { allowedBody ->
+                    val aNorm = PersianTextNormalizer.normalizePersian(allowedBody)
+                    val aUrls = extractUrls(allowedBody)
+                    val aPromo = promoTerms.any { aNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    val aAppPromo = aUrls.any { u -> appStoreDomains.any { u.lowercase().contains(it) } } ||
+                        promoAppTerms.any { aNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    val aUrgency = urgencyTerms.any { aNorm.contains(PersianTextNormalizer.normalizePersian(it)) }
+                    extractBehavioralSignature(
+                        senderType = SenderType.PHONE_NUMBER,
+                        rawBody = allowedBody,
+                        normalizedBody = aNorm,
+                        hasUrl = aUrls.isNotEmpty(),
+                        hasHandle = handleRegex.containsMatchIn(allowedBody),
+                        hasAppPromo = aAppPromo,
+                        hasPromoTerm = aPromo,
+                        hasUrgency = aUrgency
+                    )
+                }
+
+                val behaviorMatchedBlocked = blockedSigs.count { bSig ->
+                    behavioralMatchScore(incomingSig, bSig) >= 3
+                }
+                val behaviorMatchedAllowed = allowedSigs.count { aSig ->
+                    behavioralMatchScore(incomingSig, aSig) >= 3
+                }
+
+                // Also check if user consistently blocks this sender class (e.g. ALPHANUMERIC / SHORT_CODE)
+                val sameSenderTypeBlocked = blockedSigs.count { it.senderType == senderType }
+                val nonPhoneSenderBehaviorBoost = if (
+                    (senderType == SenderType.ALPHANUMERIC || senderType == SenderType.SHORT_CODE) &&
+                    sameSenderTypeBlocked >= 3 &&
+                    (incomingSig.hasUrl || incomingSig.hasHandle || incomingSig.hasPromoTerm || incomingSig.hasAppPromo || incomingSig.hasCancelCue)
+                ) {
+                    18
+                } else {
+                    0
+                }
+
+                val hasRiskyTrait = incomingSig.hasUrl || incomingSig.hasHandle || incomingSig.hasAppPromo ||
+                    incomingSig.hasPromoTerm || incomingSig.hasCancelCue || incomingSig.hasUrgency
+                if (hasRiskyTrait && behaviorMatchedBlocked >= 2 && behaviorMatchedBlocked > behaviorMatchedAllowed) {
+                    val behaviorPoints = (28 + (behaviorMatchedBlocked - 2) * 8 + nonPhoneSenderBehaviorBoost).coerceAtMost(48)
+                    score += behaviorPoints
+                    behavioralMatch = true
+                    learnedMatch = true
+                    signals += "یادگیری الگوی رفتاری از مسدودسازی‌های قبلی شما (+$behaviorPoints)"
+                } else if (nonPhoneSenderBehaviorBoost > 0) {
+                    score += nonPhoneSenderBehaviorBoost
+                    behavioralMatch = true
+                    learnedMatch = true
+                    signals += "الگوی رفتاری حساسیت کاربر به فرستندگان تبلیغاتی (+$nonPhoneSenderBehaviorBoost)"
                 }
             }
         }
 
-        // 8. Legitimate OTP dampening (if short OTP with NO URL, NO promo, and NOT learned spam)
+        // 8. Legitimate OTP dampening (if clean OTP with NO URL, NO promo/app-promo, and NOT learned spam)
         val hasOtpCue = otpSafeTerms.any { normalizedBody.contains(PersianTextNormalizer.normalizePersian(it)) }
-        if (hasOtpCue && !hasAnyUrl && matchedPromo.isEmpty() && !learnedMatch) {
+        if (hasOtpCue && !hasAnyUrl && !hasMessengerHandle && matchedPromo.isEmpty() && matchedAppPromo.isEmpty() && !learnedMatch) {
             score = (score - 18).coerceAtLeast(0)
             signals += "نشانگر کد ورود بدون لینک (-۱۸)"
         }
 
         val finalScore = score.coerceIn(0, 100)
         val categoryHint = when {
+            behavioralMatch && finalScore >= 45 ->
+                "تشخیص هوشمند بر اساس الگوی رفتاری مسدودسازی شما"
             learnedMatch && finalScore >= 45 ->
                 "تشخیص هوشمند بر اساس پیام‌های مسدودشده قبلی"
+            (hasAppStoreLink || matchedAppPromo.isNotEmpty()) && finalScore >= 45 ->
+                "اپلیکیشن تبلیغاتی / کمپین نصب برنامه"
             matchedOrg.isNotEmpty() && hasAnyUrl && finalScore >= 50 ->
                 "احتمال فیشینگ یا جعل هویت سازمانی/بانکی"
             matchedPromo.isNotEmpty() && finalScore >= 38 ->
@@ -278,6 +446,47 @@ object SmartScoringEngine {
             signals = signals,
             categoryHintFa = categoryHint
         )
+    }
+
+    private fun extractBehavioralSignature(
+        senderType: SenderType,
+        rawBody: String,
+        normalizedBody: String,
+        hasUrl: Boolean,
+        hasHandle: Boolean,
+        hasAppPromo: Boolean,
+        hasPromoTerm: Boolean,
+        hasUrgency: Boolean
+    ): BehavioralSignature {
+        val hasCancelCue = cancelCues.any { normalizedBody.contains(PersianTextNormalizer.normalizePersian(it)) }
+        val bucket = when {
+            rawBody.length < 55 -> LengthBucket.SHORT
+            rawBody.length <= 135 -> LengthBucket.MEDIUM
+            else -> LengthBucket.LONG
+        }
+        return BehavioralSignature(
+            senderType = senderType,
+            hasUrl = hasUrl,
+            hasHandle = hasHandle,
+            hasAppPromo = hasAppPromo,
+            hasPromoTerm = hasPromoTerm,
+            hasCancelCue = hasCancelCue,
+            hasUrgency = hasUrgency,
+            lengthBucket = bucket
+        )
+    }
+
+    private fun behavioralMatchScore(a: BehavioralSignature, b: BehavioralSignature): Int {
+        var matches = 0
+        if (a.senderType == b.senderType) matches++
+        if (a.hasUrl && b.hasUrl) matches += 2
+        if (a.hasHandle && b.hasHandle) matches += 2
+        if (a.hasAppPromo && b.hasAppPromo) matches += 2
+        if (a.hasPromoTerm && b.hasPromoTerm) matches++
+        if (a.hasCancelCue && b.hasCancelCue) matches += 2
+        if (a.hasUrgency && b.hasUrgency) matches++
+        if (a.lengthBucket == b.lengthBucket && a.lengthBucket != LengthBucket.SHORT) matches++
+        return matches
     }
 
     private fun stripVariableNumbers(text: String): String =

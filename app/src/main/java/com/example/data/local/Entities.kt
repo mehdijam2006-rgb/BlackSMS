@@ -95,7 +95,8 @@ data class ThreadSummary(
     val isArchived: Boolean,
     val isPinned: Boolean,
     val lastSimSlot: Int,
-    val hasMms: Boolean
+    val hasMms: Boolean,
+    val matchedSnippet: String? = null
 ) {
     val displayTitle: String
         get() = contactName?.takeIf { it.isNotBlank() } ?: senderDisplay

@@ -31,6 +31,12 @@ interface MessageDao {
     @Query("SELECT systemSmsId FROM messages WHERE systemSmsId IS NOT NULL")
     suspend fun getAllSyncedSystemIds(): List<Long>
 
+    @Query("SELECT * FROM messages WHERE systemSmsId IS NOT NULL")
+    suspend fun getAllSyncedMessages(): List<MessageEntity>
+
+    @Query("UPDATE messages SET simSlot = :simSlot WHERE id = :id")
+    suspend fun updateSimSlot(id: Long, simSlot: Int)
+
     @Query(
         "SELECT * FROM messages WHERE dedupHash = :dedupHash AND isOutgoing = :isOutgoing " +
             "AND timestamp BETWEEN :minTimestamp AND :maxTimestamp LIMIT 1"

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -44,7 +45,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,6 +53,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -79,12 +80,17 @@ import com.example.ui.components.AppIcons
 import com.example.ui.components.EmptyStateBanner
 import com.example.ui.components.PersianFormatters
 import com.example.ui.components.SenderAvatar
+import com.example.ui.components.StickerIconBadge
 import com.example.ui.i18n.LocalStrings
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.ElectricIndigo
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.NeonCyan
 import com.example.ui.theme.RoseCrimson
+import com.example.ui.theme.SafeEmerald
+import com.example.ui.theme.SkyBlue
+import com.example.ui.theme.SoftViolet
+import com.example.ui.theme.TangerineOrange
 import com.example.ui.viewmodel.InboxFilterTab
 
 @Composable
@@ -96,6 +102,7 @@ fun InboxScreen(
     activeFilter: InboxFilterTab,
     hasCorePermissions: Boolean,
     isDefaultSmsApp: Boolean,
+    showSimBadge: Boolean = false,
     onRequestPermissions: () -> Unit,
     onRequestDefaultSms: () -> Unit,
     onSearchChange: (String) -> Unit,
@@ -119,6 +126,8 @@ fun InboxScreen(
     val strings = LocalStrings.current
     val clipboard = LocalClipboardManager.current
     val searchFocusRequester = remember { FocusRequester() }
+    var pendingDeleteThreadKey by remember { mutableStateOf<String?>(null) }
+    var showBatchDeleteConfirm by remember { mutableStateOf(false) }
 
     BackHandler(enabled = isSearchOpen) {
         onSearchChange("")
@@ -140,7 +149,7 @@ fun InboxScreen(
                 .widthIn(max = 640.dp)
                 .fillMaxSize()
         ) {
-            // Contextual multi-select bar (Google Messages style)
+            // Contextual multi-select bar with colorful sticker action badges
             AnimatedVisibility(visible = selectedThreadKeys.isNotEmpty()) {
                 Surface(
                     color = MaterialTheme.colorScheme.secondaryContainer,
@@ -168,18 +177,37 @@ fun InboxScreen(
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
-                        Row {
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                             IconButton(onClick = onBatchMarkRead) {
-                                Icon(AppIcons.DoneAll, contentDescription = strings.menuMarkRead)
+                                StickerIconBadge(
+                                    icon = AppIcons.DoneAll,
+                                    tint = SafeEmerald,
+                                    contentDescription = strings.menuMarkRead
+                                )
                             }
                             IconButton(onClick = onBatchArchive) {
-                                Icon(AppIcons.Archive, contentDescription = strings.menuArchive)
+                                StickerIconBadge(
+                                    icon = AppIcons.Archive,
+                                    tint = ElectricIndigo,
+                                    contentDescription = strings.menuArchive
+                                )
                             }
                             IconButton(onClick = onBatchBlock) {
-                                Icon(AppIcons.Block, contentDescription = strings.menuBlockSender, tint = RoseCrimson)
+                                StickerIconBadge(
+                                    icon = AppIcons.Block,
+                                    tint = TangerineOrange,
+                                    contentDescription = strings.menuBlockSender
+                                )
                             }
-                            IconButton(onClick = onBatchDelete) {
-                                Icon(Icons.Default.Delete, contentDescription = strings.menuDeleteThread, tint = MaterialTheme.colorScheme.error)
+                            IconButton(
+                                onClick = { showBatchDeleteConfirm = true },
+                                modifier = Modifier.testTag("inbox_batch_delete_btn")
+                            ) {
+                                StickerIconBadge(
+                                    icon = Icons.Default.Delete,
+                                    tint = RoseCrimson,
+                                    contentDescription = strings.menuDeleteThread
+                                )
                             }
                         }
                     }
@@ -295,6 +323,7 @@ fun InboxScreen(
                             thread = thread,
                             isSelected = thread.threadKey in selectedThreadKeys,
                             selectionMode = selectedThreadKeys.isNotEmpty(),
+                            showSimBadge = showSimBadge || thread.lastSimSlot > 1,
                             onTap = {
                                 if (selectedThreadKeys.isNotEmpty()) {
                                     onToggleSelectThread(thread.threadKey)
@@ -307,7 +336,7 @@ fun InboxScreen(
                             onTogglePin = { onTogglePin(thread.threadKey, !thread.isPinned) },
                             onToggleArchive = { onToggleArchive(thread.threadKey, !thread.isArchived) },
                             onBlockSender = { onBlockSender(thread.senderRaw.ifBlank { thread.senderDisplay }) },
-                            onDelete = { onDeleteThread(thread.threadKey) },
+                            onDelete = { pendingDeleteThreadKey = thread.threadKey },
                             onCopyOtp = { code ->
                                 clipboard.setText(AnnotatedString(code))
                                 onCopyOtpFeedback(code)
@@ -334,13 +363,13 @@ fun InboxScreen(
                 shape = RoundedCornerShape(24.dp),
                 tonalElevation = 8.dp,
                 shadowElevation = 8.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchChange,
-                    placeholder = { Text(strings.searchInboxHint) },
+                    placeholder = { Text(strings.searchInboxHint, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                     trailingIcon = {
                         IconButton(
@@ -363,6 +392,85 @@ fun InboxScreen(
             }
         }
     }
+
+    pendingDeleteThreadKey?.let { keyToDelete ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteThreadKey = null },
+            icon = {
+                StickerIconBadge(
+                    icon = Icons.Default.Delete,
+                    tint = RoseCrimson,
+                    size = 42.dp,
+                    iconSize = 24.dp
+                )
+            },
+            title = { Text(strings.confirmDeleteThreadTitle) },
+            text = { Text(strings.confirmDeleteThreadBody) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteThread(keyToDelete)
+                        pendingDeleteThreadKey = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = RoseCrimson,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_thread_btn")
+                ) {
+                    Text(strings.deleteForever)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteThreadKey = null }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
+
+    if (showBatchDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteConfirm = false },
+            icon = {
+                StickerIconBadge(
+                    icon = Icons.Default.Delete,
+                    tint = RoseCrimson,
+                    size = 42.dp,
+                    iconSize = 24.dp
+                )
+            },
+            title = {
+                Text(
+                    PersianFormatters.formatDigits(
+                        strings.confirmDeleteBatchThreadsTitle(selectedThreadKeys.size),
+                        strings.language
+                    )
+                )
+            },
+            text = { Text(strings.confirmDeleteBatchThreadsBody) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onBatchDelete()
+                        showBatchDeleteConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = RoseCrimson,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_batch_delete_threads_btn")
+                ) {
+                    Text(strings.deleteForever)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchDeleteConfirm = false }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -371,6 +479,7 @@ private fun ThreadCard(
     thread: ThreadSummary,
     isSelected: Boolean,
     selectionMode: Boolean,
+    showSimBadge: Boolean,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
     onToggleRead: () -> Unit,
@@ -383,6 +492,7 @@ private fun ThreadCard(
     val strings = LocalStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
     val hasUnread = thread.unreadCount > 0
+    val previewBody = thread.matchedSnippet ?: thread.lastBody
     val otpCode = remember(thread.lastBody) { OtpExtractor.extractOtp(thread.lastBody) }
 
     Card(
@@ -404,7 +514,7 @@ private fun ThreadCard(
             width = if (isSelected || hasUnread) 1.2.dp else 0.8.dp,
             color = when {
                 isSelected -> MaterialTheme.colorScheme.primary
-                hasUnread -> NeonCyan.copy(alpha = 0.55f)
+                hasUnread -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
                 else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
             }
         ),
@@ -441,15 +551,16 @@ private fun ThreadCard(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         modifier = Modifier.weight(1f)
                     ) {
                         if (thread.isPinned) {
-                            Icon(
-                                imageVector = AppIcons.Pin,
+                            StickerIconBadge(
+                                icon = AppIcons.Pin,
+                                tint = AmberGold,
                                 contentDescription = strings.menuPin,
-                                tint = NeonCyan,
-                                modifier = Modifier.size(14.dp)
+                                size = 20.dp,
+                                iconSize = 13.dp
                             )
                         }
                         Text(
@@ -458,7 +569,8 @@ private fun ThreadCard(
                                 fontWeight = if (hasUnread) FontWeight.Bold else FontWeight.SemiBold
                             ),
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         if (thread.senderType == SenderType.ALPHANUMERIC) {
                             Surface(
@@ -469,6 +581,33 @@ private fun ThreadCard(
                                     text = strings.badgeTextSender,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        if (thread.isArchived) {
+                            Surface(
+                                color = ElectricIndigo.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = strings.badgeArchived,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ElectricIndigo,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        if (showSimBadge && thread.lastSimSlot > 0) {
+                            val simTint = if (thread.lastSimSlot == 2) AmberGold else NeonCyan
+                            Surface(
+                                color = simTint.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = PersianFormatters.formatDigits("SIM ${thread.lastSimSlot}", strings.language),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = simTint,
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                                 )
                             }
@@ -490,11 +629,15 @@ private fun ThreadCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = thread.lastBody,
+                        text = previewBody,
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = if (hasUnread) FontWeight.Medium else FontWeight.Normal
+                            fontWeight = if (hasUnread || thread.matchedSnippet != null) FontWeight.Medium else FontWeight.Normal
                         ),
-                        color = if (hasUnread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = when {
+                            thread.matchedSnippet != null -> MaterialTheme.colorScheme.primary
+                            hasUnread -> MaterialTheme.colorScheme.onSurface
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -535,7 +678,7 @@ private fun ThreadCard(
                             Icon(
                                 AppIcons.Copy,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                tint = SkyBlue,
                                 modifier = Modifier.size(13.dp)
                             )
                             Text(
@@ -564,7 +707,12 @@ private fun ThreadCard(
                 ) {
                     DropdownMenuItem(
                         text = { Text(if (thread.isPinned) strings.menuUnpin else strings.menuPin) },
-                        leadingIcon = { Icon(AppIcons.Pin, contentDescription = null) },
+                        leadingIcon = {
+                            StickerIconBadge(
+                                icon = AppIcons.Pin,
+                                tint = AmberGold
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onTogglePin()
@@ -573,9 +721,9 @@ private fun ThreadCard(
                     DropdownMenuItem(
                         text = { Text(if (hasUnread) strings.menuMarkRead else strings.menuMarkUnread) },
                         leadingIcon = {
-                            Icon(
-                                if (hasUnread) Icons.Default.CheckCircle else Icons.Default.Notifications,
-                                contentDescription = null
+                            StickerIconBadge(
+                                icon = if (hasUnread) Icons.Default.CheckCircle else Icons.Default.Notifications,
+                                tint = if (hasUnread) SafeEmerald else SkyBlue
                             )
                         },
                         onClick = {
@@ -586,9 +734,9 @@ private fun ThreadCard(
                     DropdownMenuItem(
                         text = { Text(if (thread.isArchived) strings.menuUnarchive else strings.menuArchive) },
                         leadingIcon = {
-                            Icon(
-                                if (thread.isArchived) AppIcons.Restore else AppIcons.Archive,
-                                contentDescription = null
+                            StickerIconBadge(
+                                icon = if (thread.isArchived) AppIcons.Restore else AppIcons.Archive,
+                                tint = if (thread.isArchived) SoftViolet else ElectricIndigo
                             )
                         },
                         onClick = {
@@ -597,16 +745,26 @@ private fun ThreadCard(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(strings.menuBlockSender) },
-                        leadingIcon = { Icon(AppIcons.Block, contentDescription = null, tint = RoseCrimson) },
+                        text = { Text(strings.menuBlockSender, color = TangerineOrange) },
+                        leadingIcon = {
+                            StickerIconBadge(
+                                icon = AppIcons.Block,
+                                tint = TangerineOrange
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onBlockSender()
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(strings.menuDeleteThread) },
-                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                        text = { Text(strings.menuDeleteThread, color = RoseCrimson) },
+                        leadingIcon = {
+                            StickerIconBadge(
+                                icon = Icons.Default.Delete,
+                                tint = RoseCrimson
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onDelete()

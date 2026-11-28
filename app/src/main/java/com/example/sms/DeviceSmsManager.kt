@@ -37,7 +37,8 @@ data class DeviceSmsRecord(
     val isOutgoing: Boolean,
     val isRead: Boolean,
     val isMms: Boolean = false,
-    val attachmentUri: String? = null
+    val attachmentUri: String? = null,
+    val simSlot: Int = 1
 )
 
 object DeviceSmsManager {
@@ -62,14 +63,124 @@ object DeviceSmsManager {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    fun buildSubIdToSlotMap(context: Context): Map<Int, Int> {
+        val result = linkedMapOf<Int, Int>()
+        if (!DefaultSmsHelper.hasPhoneStatePermission(context)) return result
+        try {
+            val subManager = context.getSystemService(SubscriptionManager::class.java) ?: return result
+            val allInfos = buildList {
+                subManager.activeSubscriptionInfoList?.let { addAll(it) }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    runCatching { subManager.completeActiveSubscriptionInfoList }.getOrNull()?.let { addAll(it) }
+                }
+                runCatching { subManager.accessibleSubscriptionInfoList }.getOrNull()?.let { addAll(it) }
+                for (slot in 0..1) {
+                    runCatching { subManager.getActiveSubscriptionInfoForSimSlotIndex(slot) }.getOrNull()?.let { add(it) }
+                }
+            }
+            for (info in allInfos) {
+                if (info.subscriptionId >= 0 && info.simSlotIndex >= 0) {
+                    result[info.subscriptionId] = info.simSlotIndex + 1
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return result
+    }
+
+    fun resolveSimSlotFromSubscription(
+        subId: Int?,
+        subIdToSlotMap: Map<Int, Int>,
+        fallbackDistinctMap: Map<Int, Int> = emptyMap(),
+        explicitSlotIndex: Int? = null
+    ): Int {
+        if (explicitSlotIndex != null && explicitSlotIndex in 0..3) {
+            return explicitSlotIndex + 1
+        }
+        if (subId != null && subId >= 0) {
+            subIdToSlotMap[subId]?.let { return it }
+            fallbackDistinctMap[subId]?.let { return it }
+            if (subId in 1..2) return subId
+        }
+        return 1
+    }
+
+    fun resolveSimSlotFromIntent(context: Context, intent: Intent): Int {
+        val extras = intent.extras ?: return 1
+        val subIdToSlotMap = buildSubIdToSlotMap(context)
+
+        val slotCandidates = listOf(
+            "android.telephony.extra.SLOT_INDEX",
+            "slot",
+            "simSlot",
+            "sim_slot",
+            "phone",
+            "sim_id"
+        )
+        var explicitSlot: Int? = null
+        for (key in slotCandidates) {
+            if (extras.containsKey(key)) {
+                val raw = extras.getInt(key, -1)
+                if (raw in 0..3) {
+                    explicitSlot = raw
+                    break
+                }
+            }
+        }
+
+        val subCandidates = listOf(
+            SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX,
+            "subscription",
+            "sub_id"
+        )
+        var subId: Int? = null
+        for (key in subCandidates) {
+            if (extras.containsKey(key)) {
+                val raw = extras.getInt(key, -1)
+                if (raw >= 0) {
+                    subId = raw
+                    break
+                }
+            }
+        }
+
+        return resolveSimSlotFromSubscription(
+            subId = subId,
+            subIdToSlotMap = subIdToSlotMap,
+            explicitSlotIndex = explicitSlot
+        )
+    }
+
     suspend fun readDeviceMessages(context: Context, limit: Int = 1000): List<DeviceSmsRecord> =
         withContext(Dispatchers.IO) {
             if (!DefaultSmsHelper.hasReadSmsPermission(context)) return@withContext emptyList()
             val results = mutableListOf<DeviceSmsRecord>()
             val resolver = context.contentResolver
+            val subIdToSlotMap = buildSubIdToSlotMap(context)
 
+            data class RawSms(
+                val sysId: Long,
+                val address: String,
+                val body: String,
+                val timestamp: Long,
+                val isOutgoing: Boolean,
+                val isRead: Boolean,
+                val subId: Int?
+            )
+
+            val rawSmsList = mutableListOf<RawSms>()
             try {
-                val projection = arrayOf(
+                val fullProjection = arrayOf(
+                    Telephony.Sms._ID,
+                    Telephony.Sms.ADDRESS,
+                    Telephony.Sms.BODY,
+                    Telephony.Sms.DATE,
+                    Telephony.Sms.TYPE,
+                    Telephony.Sms.READ,
+                    Telephony.Sms.SUBSCRIPTION_ID
+                )
+                val fallbackProjection = arrayOf(
                     Telephony.Sms._ID,
                     Telephony.Sms.ADDRESS,
                     Telephony.Sms.BODY,
@@ -77,90 +188,174 @@ object DeviceSmsManager {
                     Telephony.Sms.TYPE,
                     Telephony.Sms.READ
                 )
-                resolver.query(
-                    Telephony.Sms.CONTENT_URI,
-                    projection,
-                    null,
-                    null,
-                    "${Telephony.Sms.DATE} DESC LIMIT $limit"
-                )?.use { cursor ->
-                    val idIdx = cursor.getColumnIndex(Telephony.Sms._ID)
-                    val addrIdx = cursor.getColumnIndex(Telephony.Sms.ADDRESS)
-                    val bodyIdx = cursor.getColumnIndex(Telephony.Sms.BODY)
-                    val dateIdx = cursor.getColumnIndex(Telephony.Sms.DATE)
-                    val typeIdx = cursor.getColumnIndex(Telephony.Sms.TYPE)
-                    val readIdx = cursor.getColumnIndex(Telephony.Sms.READ)
+                val cursor = try {
+                    resolver.query(
+                        Telephony.Sms.CONTENT_URI,
+                        fullProjection,
+                        null,
+                        null,
+                        "${Telephony.Sms.DATE} DESC LIMIT $limit"
+                    )
+                } catch (_: IllegalArgumentException) {
+                    resolver.query(
+                        Telephony.Sms.CONTENT_URI,
+                        fallbackProjection,
+                        null,
+                        null,
+                        "${Telephony.Sms.DATE} DESC LIMIT $limit"
+                    )
+                }
 
-                    while (cursor.moveToNext()) {
-                        val sysId = if (idIdx >= 0) cursor.getLongOrNull(idIdx) ?: continue else continue
-                        val address = if (addrIdx >= 0) cursor.getStringOrNull(addrIdx).orEmpty() else ""
-                        val body = if (bodyIdx >= 0) cursor.getStringOrNull(bodyIdx).orEmpty() else ""
-                        val rawDate = if (dateIdx >= 0) cursor.getLongOrNull(dateIdx) ?: System.currentTimeMillis() else System.currentTimeMillis()
+                cursor?.use { c ->
+                    val idIdx = c.getColumnIndex(Telephony.Sms._ID)
+                    val addrIdx = c.getColumnIndex(Telephony.Sms.ADDRESS)
+                    val bodyIdx = c.getColumnIndex(Telephony.Sms.BODY)
+                    val dateIdx = c.getColumnIndex(Telephony.Sms.DATE)
+                    val typeIdx = c.getColumnIndex(Telephony.Sms.TYPE)
+                    val readIdx = c.getColumnIndex(Telephony.Sms.READ)
+                    val subIdx = c.getColumnIndex(Telephony.Sms.SUBSCRIPTION_ID)
+
+                    while (c.moveToNext()) {
+                        val sysId = if (idIdx >= 0) c.getLongOrNull(idIdx) ?: continue else continue
+                        val address = if (addrIdx >= 0) c.getStringOrNull(addrIdx).orEmpty() else ""
+                        val body = if (bodyIdx >= 0) c.getStringOrNull(bodyIdx).orEmpty() else ""
+                        val rawDate = if (dateIdx >= 0) c.getLongOrNull(dateIdx) ?: System.currentTimeMillis() else System.currentTimeMillis()
                         val date = if (rawDate in 1L until 10_000_000_000L) rawDate * 1000L else rawDate
-                        val type = if (typeIdx >= 0) cursor.getIntOrNull(typeIdx) ?: Telephony.Sms.MESSAGE_TYPE_INBOX else Telephony.Sms.MESSAGE_TYPE_INBOX
-                        val read = if (readIdx >= 0) (cursor.getIntOrNull(readIdx) ?: 1) == 1 else true
+                        val type = if (typeIdx >= 0) c.getIntOrNull(typeIdx) ?: Telephony.Sms.MESSAGE_TYPE_INBOX else Telephony.Sms.MESSAGE_TYPE_INBOX
+                        val read = if (readIdx >= 0) (c.getIntOrNull(readIdx) ?: 1) == 1 else true
+                        val subId = if (subIdx >= 0) c.getIntOrNull(subIdx)?.takeIf { it >= 0 } else null
 
                         if (body.isBlank()) continue
                         val isOutgoing = type == Telephony.Sms.MESSAGE_TYPE_SENT ||
                             type == Telephony.Sms.MESSAGE_TYPE_OUTBOX ||
                             type == Telephony.Sms.MESSAGE_TYPE_QUEUED
 
-                        results += DeviceSmsRecord(
-                            systemId = sysId,
-                            senderRaw = address,
+                        rawSmsList += RawSms(
+                            sysId = sysId,
+                            address = address,
                             body = body,
                             timestamp = date,
                             isOutgoing = isOutgoing,
                             isRead = read,
-                            isMms = false
+                            subId = subId
                         )
                     }
                 }
             } catch (_: Exception) {
             }
 
+            data class RawMms(
+                val mmsId: Long,
+                val mmsAddr: String,
+                val finalBody: String,
+                val timestamp: Long,
+                val isOutgoing: Boolean,
+                val isRead: Boolean,
+                val imageUri: String?,
+                val subId: Int?
+            )
+
+            val rawMmsList = mutableListOf<RawMms>()
             try {
-                val mmsProj = arrayOf(
+                val mmsProjFull = arrayOf(
+                    Telephony.Mms._ID,
+                    Telephony.Mms.DATE,
+                    Telephony.Mms.MESSAGE_BOX,
+                    Telephony.Mms.READ,
+                    Telephony.Mms.SUBSCRIPTION_ID
+                )
+                val mmsProjFallback = arrayOf(
                     Telephony.Mms._ID,
                     Telephony.Mms.DATE,
                     Telephony.Mms.MESSAGE_BOX,
                     Telephony.Mms.READ
                 )
-                resolver.query(
-                    Telephony.Mms.CONTENT_URI,
-                    mmsProj,
-                    null,
-                    null,
-                    "${Telephony.Mms.DATE} DESC LIMIT 100"
-                )?.use { cursor ->
-                    val idIdx = cursor.getColumnIndex(Telephony.Mms._ID)
-                    val dateIdx = cursor.getColumnIndex(Telephony.Mms.DATE)
-                    val boxIdx = cursor.getColumnIndex(Telephony.Mms.MESSAGE_BOX)
-                    val readIdx = cursor.getColumnIndex(Telephony.Mms.READ)
+                val cursor = try {
+                    resolver.query(
+                        Telephony.Mms.CONTENT_URI,
+                        mmsProjFull,
+                        null,
+                        null,
+                        "${Telephony.Mms.DATE} DESC LIMIT 100"
+                    )
+                } catch (_: IllegalArgumentException) {
+                    resolver.query(
+                        Telephony.Mms.CONTENT_URI,
+                        mmsProjFallback,
+                        null,
+                        null,
+                        "${Telephony.Mms.DATE} DESC LIMIT 100"
+                    )
+                }
 
-                    while (cursor.moveToNext()) {
-                        val mmsId = if (idIdx >= 0) cursor.getLongOrNull(idIdx) ?: continue else continue
-                        val rawDate = if (dateIdx >= 0) cursor.getLongOrNull(dateIdx) ?: 0L else 0L
+                cursor?.use { c ->
+                    val idIdx = c.getColumnIndex(Telephony.Mms._ID)
+                    val dateIdx = c.getColumnIndex(Telephony.Mms.DATE)
+                    val boxIdx = c.getColumnIndex(Telephony.Mms.MESSAGE_BOX)
+                    val readIdx = c.getColumnIndex(Telephony.Mms.READ)
+                    val subIdx = c.getColumnIndex(Telephony.Mms.SUBSCRIPTION_ID)
+
+                    while (c.moveToNext()) {
+                        val mmsId = if (idIdx >= 0) c.getLongOrNull(idIdx) ?: continue else continue
+                        val rawDate = if (dateIdx >= 0) c.getLongOrNull(dateIdx) ?: 0L else 0L
                         val ts = if (rawDate in 1L until 10_000_000_000L) rawDate * 1000L else rawDate
-                        val box = if (boxIdx >= 0) cursor.getIntOrNull(boxIdx) ?: Telephony.Mms.MESSAGE_BOX_INBOX else Telephony.Mms.MESSAGE_BOX_INBOX
-                        val read = if (readIdx >= 0) (cursor.getIntOrNull(readIdx) ?: 1) == 1 else true
+                        val box = if (boxIdx >= 0) c.getIntOrNull(boxIdx) ?: Telephony.Mms.MESSAGE_BOX_INBOX else Telephony.Mms.MESSAGE_BOX_INBOX
+                        val read = if (readIdx >= 0) (c.getIntOrNull(readIdx) ?: 1) == 1 else true
+                        val subId = if (subIdx >= 0) c.getIntOrNull(subIdx)?.takeIf { it >= 0 } else null
 
                         val mmsAddr = queryMmsSender(context, mmsId)
                         val (mmsBody, mmsImageUri) = queryMmsParts(context, mmsId)
                         val finalBody = mmsBody.ifBlank { if (mmsImageUri != null) "" else "[MMS]" }
-                        results += DeviceSmsRecord(
-                            systemId = -mmsId,
-                            senderRaw = mmsAddr,
-                            body = finalBody,
+
+                        rawMmsList += RawMms(
+                            mmsId = mmsId,
+                            mmsAddr = mmsAddr,
+                            finalBody = finalBody,
                             timestamp = ts,
                             isOutgoing = box == Telephony.Mms.MESSAGE_BOX_SENT,
                             isRead = read,
-                            isMms = true,
-                            attachmentUri = mmsImageUri
+                            imageUri = mmsImageUri,
+                            subId = subId
                         )
                     }
                 }
             } catch (_: Exception) {
+            }
+
+            // If READ_PHONE_STATE is unavailable (subIdToSlotMap empty), infer SIM 1 vs SIM 2 deterministically from distinct observed sub_ids
+            val distinctUnmappedSubIds = (rawSmsList.mapNotNull { it.subId } + rawMmsList.mapNotNull { it.subId })
+                .distinct()
+                .sorted()
+            val fallbackDistinctMap = if (subIdToSlotMap.isEmpty() && distinctUnmappedSubIds.size >= 2) {
+                distinctUnmappedSubIds.mapIndexed { index, subId -> subId to (index + 1) }.toMap()
+            } else {
+                emptyMap()
+            }
+
+            for (raw in rawSmsList) {
+                results += DeviceSmsRecord(
+                    systemId = raw.sysId,
+                    senderRaw = raw.address,
+                    body = raw.body,
+                    timestamp = raw.timestamp,
+                    isOutgoing = raw.isOutgoing,
+                    isRead = raw.isRead,
+                    isMms = false,
+                    simSlot = resolveSimSlotFromSubscription(raw.subId, subIdToSlotMap, fallbackDistinctMap)
+                )
+            }
+            for (raw in rawMmsList) {
+                results += DeviceSmsRecord(
+                    systemId = -raw.mmsId,
+                    senderRaw = raw.mmsAddr,
+                    body = raw.finalBody,
+                    timestamp = raw.timestamp,
+                    isOutgoing = raw.isOutgoing,
+                    isRead = raw.isRead,
+                    isMms = true,
+                    attachmentUri = raw.imageUri,
+                    simSlot = resolveSimSlotFromSubscription(raw.subId, subIdToSlotMap, fallbackDistinctMap)
+                )
             }
 
             results.sortedBy { it.timestamp }
@@ -307,7 +502,13 @@ object DeviceSmsManager {
             }
 
             val sysId = if (DefaultSmsHelper.isDefaultSmsApp(context)) {
-                writeSentToSystemProvider(context, cleanRecipient, body, System.currentTimeMillis())
+                writeSentToSystemProvider(
+                    context = context,
+                    recipient = cleanRecipient,
+                    body = body,
+                    timestamp = System.currentTimeMillis(),
+                    subscriptionId = subscriptionId
+                )
             } else {
                 null
             }
@@ -321,7 +522,8 @@ object DeviceSmsManager {
         context: Context,
         senderRaw: String,
         body: String,
-        timestamp: Long
+        timestamp: Long,
+        subscriptionId: Int? = null
     ): Long? {
         if (!DefaultSmsHelper.isDefaultSmsApp(context)) return null
         return try {
@@ -332,6 +534,9 @@ object DeviceSmsManager {
                 put(Telephony.Sms.READ, 0)
                 put(Telephony.Sms.SEEN, 0)
                 put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_INBOX)
+                if (subscriptionId != null && subscriptionId >= 0) {
+                    put(Telephony.Sms.SUBSCRIPTION_ID, subscriptionId)
+                }
             }
             context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)?.let { uri ->
                 ContentUris.parseId(uri)
@@ -345,7 +550,8 @@ object DeviceSmsManager {
         context: Context,
         recipient: String,
         body: String,
-        timestamp: Long
+        timestamp: Long,
+        subscriptionId: Int? = null
     ): Long? {
         return try {
             val values = ContentValues().apply {
@@ -354,6 +560,9 @@ object DeviceSmsManager {
                 put(Telephony.Sms.DATE, timestamp)
                 put(Telephony.Sms.READ, 1)
                 put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+                if (subscriptionId != null && subscriptionId >= 0) {
+                    put(Telephony.Sms.SUBSCRIPTION_ID, subscriptionId)
+                }
             }
             context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)?.let { uri ->
                 ContentUris.parseId(uri)

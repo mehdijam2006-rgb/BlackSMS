@@ -57,6 +57,13 @@ private fun handleIncomingSmsIntent(
         timestamp = sms.timestampMillis.takeIf { it > 0L } ?: timestamp
         grouped.getOrPut(rawSender) { StringBuilder() }.append(sms.messageBody.orEmpty())
     }
+    val simSlot = DeviceSmsManager.resolveSimSlotFromIntent(appContext, intent)
+    val subscriptionId = intent.extras?.let { extras ->
+        listOf(android.telephony.SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX, "subscription", "sub_id")
+            .firstNotNullOfOrNull { key ->
+                if (extras.containsKey(key)) extras.getInt(key, -1).takeIf { it >= 0 } else null
+            }
+    }
 
     CoroutineScope(Dispatchers.IO).launch {
         try {
@@ -75,7 +82,8 @@ private fun handleIncomingSmsIntent(
                 val result = repo.processAndStoreIncomingMessage(
                     senderRaw = senderRaw,
                     body = body,
-                    customTimestamp = timestamp
+                    customTimestamp = timestamp,
+                    simSlot = simSlot
                 ) ?: continue
 
                 if (result.decision.shouldBlock) {
@@ -87,7 +95,8 @@ private fun handleIncomingSmsIntent(
                             context = appContext,
                             senderRaw = senderRaw,
                             body = body,
-                            timestamp = timestamp
+                            timestamp = timestamp,
+                            subscriptionId = subscriptionId
                         )
                         if (systemSmsId != null) {
                             repo.attachSystemSmsId(result.messageId, systemSmsId)

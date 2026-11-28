@@ -490,6 +490,7 @@ fun SmartSmsApp(
                                     activeFilter = inboxFilter,
                                     hasCorePermissions = hasSmsPermissions && hasContactsPermission,
                                     isDefaultSmsApp = isDefaultSmsApp,
+                                    showSimBadge = activeSims.size > 1 || threads.any { it.lastSimSlot > 1 },
                                     onRequestPermissions = requestAllPermissions,
                                     onRequestDefaultSms = requestDefaultSms,
                                     onSearchChange = viewModel::setInboxSearch,

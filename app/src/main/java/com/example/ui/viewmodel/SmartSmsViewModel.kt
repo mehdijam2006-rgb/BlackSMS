@@ -19,6 +19,7 @@ import com.example.domain.model.BlockSource
 import com.example.domain.model.ListEntryType
 import com.example.domain.model.ListType
 import com.example.domain.model.MatchType
+import com.example.domain.model.PersianTextNormalizer
 import com.example.domain.model.SenderType
 import com.example.domain.model.SmartFilterLevel
 import com.example.sms.DefaultSmsHelper
@@ -173,36 +174,25 @@ class SmartSmsViewModel(application: Application) : AndroidViewModel(application
 
     val filteredThreads: StateFlow<List<ThreadSummary>> = combine(
         repository.inboxThreads,
+        repository.allInboxAndArchivedMessages,
         contactLookup,
         _inboxSearch,
         _inboxFilter
-    ) { threads, lookup, query, tab ->
-        val trimmedQuery = query.trim().lowercase()
-        threads
-            .map { t ->
-                val resolved = DeviceContactsManager.resolveSender(t.senderRaw, lookup)
-                if (resolved != null) {
-                    t.copy(contactName = resolved.name, contactPhotoUri = resolved.photoUri)
-                } else {
-                    t
-                }
+    ) { threads, allMessages, lookup, query, tab ->
+        val resolvedThreads = threads.map { t ->
+            val resolved = DeviceContactsManager.resolveSender(t.senderRaw, lookup)
+            if (resolved != null) {
+                t.copy(contactName = resolved.name, contactPhotoUri = resolved.photoUri)
+            } else {
+                t
             }
-            .filter { thread ->
-                val tabMatch = when (tab) {
-                    InboxFilterTab.ALL -> !thread.isArchived
-                    InboxFilterTab.UNREAD -> !thread.isArchived && thread.unreadCount > 0
-                    InboxFilterTab.ARCHIVED -> thread.isArchived
-                }
-                val queryMatch = if (trimmedQuery.isEmpty()) {
-                    true
-                } else {
-                    thread.displayTitle.lowercase().contains(trimmedQuery) ||
-                        thread.senderDisplay.lowercase().contains(trimmedQuery) ||
-                        thread.lastBody.lowercase().contains(trimmedQuery) ||
-                        thread.threadKey.lowercase().contains(trimmedQuery)
-                }
-                tabMatch && queryMatch
-            }
+        }
+        ThreadSearchHelper.filterThreads(
+            threads = resolvedThreads,
+            allMessages = allMessages,
+            query = query,
+            tab = tab
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val filteredBlockedMessages: StateFlow<List<MessageEntity>> = combine(
@@ -210,7 +200,7 @@ class SmartSmsViewModel(application: Application) : AndroidViewModel(application
         _blockedSearch,
         _blockedFilter
     ) { messages, query, tab ->
-        val trimmedQuery = query.trim().lowercase()
+        val normalizedQuery = PersianTextNormalizer.normalizePersian(query)
         messages.filter { msg ->
             val tabMatch = when (tab) {
                 BlockedFilterTab.ALL -> true
@@ -218,12 +208,12 @@ class SmartSmsViewModel(application: Application) : AndroidViewModel(application
                 BlockedFilterTab.MANUAL -> msg.blockSource == BlockSource.MANUAL_RULE || msg.blockSource == BlockSource.BLACKLIST
                 BlockedFilterTab.ALPHANUMERIC -> msg.senderType == SenderType.ALPHANUMERIC || msg.senderType == SenderType.PRIVATE_OR_INVALID
             }
-            val queryMatch = if (trimmedQuery.isEmpty()) {
+            val queryMatch = if (normalizedQuery.isEmpty()) {
                 true
             } else {
-                msg.senderRaw.lowercase().contains(trimmedQuery) ||
-                    msg.body.lowercase().contains(trimmedQuery) ||
-                    (msg.blockReason?.lowercase()?.contains(trimmedQuery) == true)
+                PersianTextNormalizer.normalizePersian(msg.senderRaw).contains(normalizedQuery) ||
+                    PersianTextNormalizer.normalizePersian(msg.body).contains(normalizedQuery) ||
+                    (msg.blockReason?.let { PersianTextNormalizer.normalizePersian(it).contains(normalizedQuery) } == true)
             }
             tabMatch && queryMatch
         }
@@ -562,5 +552,60 @@ class SmartSmsViewModel(application: Application) : AndroidViewModel(application
 
     fun markBlockedFolderSeen(count: Int = blockedCount.value) {
         viewModelScope.launch { repository.setLastSeenBlockedCount(count) }
+    }
+}
+
+object ThreadSearchHelper {
+    fun filterThreads(
+        threads: List<ThreadSummary>,
+        allMessages: List<MessageEntity>,
+        query: String,
+        tab: InboxFilterTab
+    ): List<ThreadSummary> {
+        val normalizedQuery = PersianTextNormalizer.normalizePersian(query)
+        if (normalizedQuery.isEmpty()) {
+            return threads.filter { thread ->
+                when (tab) {
+                    InboxFilterTab.ALL -> !thread.isArchived
+                    InboxFilterTab.UNREAD -> !thread.isArchived && thread.unreadCount > 0
+                    InboxFilterTab.ARCHIVED -> thread.isArchived
+                }
+            }
+        }
+
+        val messagesByThread = allMessages.groupBy { it.threadKey }
+        return threads.mapNotNull { thread ->
+            val tabMatch = when (tab) {
+                // Searching under All covers BOTH received AND archived messages
+                InboxFilterTab.ALL -> true
+                InboxFilterTab.UNREAD -> !thread.isArchived && thread.unreadCount > 0
+                InboxFilterTab.ARCHIVED -> thread.isArchived
+            }
+            if (!tabMatch) return@mapNotNull null
+
+            val titleMatch =
+                PersianTextNormalizer.normalizePersian(thread.displayTitle).contains(normalizedQuery) ||
+                    PersianTextNormalizer.normalizePersian(thread.senderDisplay).contains(normalizedQuery) ||
+                    PersianTextNormalizer.normalizePersian(thread.threadKey).contains(normalizedQuery)
+
+            val lastBodyMatch = PersianTextNormalizer.normalizePersian(thread.lastBody).contains(normalizedQuery)
+            val olderMatchedMessage = if (!lastBodyMatch) {
+                messagesByThread[thread.threadKey]?.firstOrNull { msg ->
+                    PersianTextNormalizer.normalizePersian(msg.body).contains(normalizedQuery)
+                }
+            } else {
+                null
+            }
+
+            if (titleMatch || lastBodyMatch || olderMatchedMessage != null) {
+                if (olderMatchedMessage != null) {
+                    thread.copy(matchedSnippet = olderMatchedMessage.body)
+                } else {
+                    thread
+                }
+            } else {
+                null
+            }
+        }
     }
 }

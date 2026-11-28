@@ -2,13 +2,15 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// BlackSMS Obsidian & Electric Cyan-Indigo Palette
+// BlackSMS Obsidian & Electric Cyan-Indigo Palette + Sticker Colors
 val NeonCyan = Color(0xFF22D3EE)
 val ElectricIndigo = Color(0xFF6366F1)
 val SoftViolet = Color(0xFFA855F7)
 val EmeraldMint = Color(0xFF10B981)
 val RoseCrimson = Color(0xFFF43F5E)
 val AmberGold = Color(0xFFF59E0B)
+val SkyBlue = Color(0xFF0EA5E9)
+val TangerineOrange = Color(0xFFF97316)
 
 // Dark (Obsidian) Theme Colors
 val DarkBg = Color(0xFF070B14)

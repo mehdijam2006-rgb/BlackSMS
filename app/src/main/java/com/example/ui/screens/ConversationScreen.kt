@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -82,6 +84,7 @@ import com.example.ui.components.AppIcons
 import com.example.ui.components.PersianFormatters
 import com.example.ui.components.SenderAvatar
 import com.example.ui.components.SimChooserDialog
+import com.example.ui.components.StickerIconBadge
 import com.example.ui.components.SystemSmsLauncher
 import com.example.ui.components.UriBitmapImage
 import com.example.ui.i18n.AppLanguage
@@ -91,6 +94,10 @@ import com.example.ui.theme.ElectricIndigo
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.NeonCyan
 import com.example.ui.theme.RoseCrimson
+import com.example.ui.theme.SafeEmerald
+import com.example.ui.theme.SkyBlue
+import com.example.ui.theme.SoftViolet
+import com.example.ui.theme.TangerineOrange
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -118,12 +125,18 @@ fun ConversationScreen(
     val senderDisplay = SenderClassifier.displaySender(senderRaw)
     val senderType = firstMsg?.senderType ?: SenderClassifier.classify(senderRaw)
     val headerTitle = resolvedContact?.name?.takeIf { it.isNotBlank() } ?: senderDisplay
+    val showSimBadge = remember(activeSims, messages) {
+        activeSims.size > 1 ||
+            messages.any { it.simSlot > 1 } ||
+            messages.map { it.simSlot }.distinct().size > 1
+    }
 
     var replyText by remember { mutableStateOf("") }
     var attachmentUri by remember { mutableStateOf<String?>(null) }
     var menuExpanded by remember { mutableStateOf(false) }
     var actionTargetMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var detailsMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var pendingDeleteMessageId by remember { mutableStateOf<Long?>(null) }
     var showSimDialog by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
@@ -193,7 +206,11 @@ fun ConversationScreen(
                 actions = {
                     if (senderType == SenderType.PHONE_NUMBER || senderType == SenderType.SHORT_CODE) {
                         IconButton(onClick = { SystemSmsLauncher.launchDialer(context, senderRaw) }) {
-                            Icon(Icons.Default.Call, contentDescription = strings.callSender)
+                            StickerIconBadge(
+                                icon = Icons.Default.Call,
+                                tint = SafeEmerald,
+                                contentDescription = strings.callSender
+                            )
                         }
                     }
                     Box {
@@ -206,15 +223,19 @@ fun ConversationScreen(
                         ) {
                             DropdownMenuItem(
                                 text = { Text(strings.addToWhitelist) },
-                                leadingIcon = { Icon(AppIcons.Shield, null) },
+                                leadingIcon = {
+                                    StickerIconBadge(icon = AppIcons.Shield, tint = SafeEmerald)
+                                },
                                 onClick = {
                                     menuExpanded = false
                                     onWhitelistSender(senderRaw)
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text(strings.addToBlacklist) },
-                                leadingIcon = { Icon(AppIcons.Block, null, tint = RoseCrimson) },
+                                text = { Text(strings.addToBlacklist, color = TangerineOrange) },
+                                leadingIcon = {
+                                    StickerIconBadge(icon = AppIcons.Block, tint = TangerineOrange)
+                                },
                                 onClick = {
                                     menuExpanded = false
                                     onBlockSenderAndExit(senderRaw)
@@ -270,10 +291,10 @@ fun ConversationScreen(
                                     )
                                 }
                             ) {
-                                Icon(
-                                    AppIcons.Attach,
-                                    contentDescription = if (strings.language == AppLanguage.EN) "Attach photo" else "پیوست تصویر",
-                                    tint = if (attachmentUri != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                StickerIconBadge(
+                                    icon = AppIcons.Attach,
+                                    tint = if (attachmentUri != null) SafeEmerald else SoftViolet,
+                                    contentDescription = if (strings.language == AppLanguage.EN) "Attach photo" else "پیوست تصویر"
                                 )
                             }
 
@@ -358,7 +379,7 @@ fun ConversationScreen(
                     }
                     MessageBubble(
                         message = msg,
-                        showSimBadge = activeSims.size > 1,
+                        showSimBadge = showSimBadge,
                         onLongPress = { actionTargetMessage = msg },
                         onCopyOtp = { code ->
                             clipboard.setText(AnnotatedString(code))
@@ -393,7 +414,9 @@ fun ConversationScreen(
                 Column {
                     ListItem(
                         headlineContent = { Text(strings.bubbleActionCopy) },
-                        leadingContent = { Icon(AppIcons.Copy, contentDescription = null) },
+                        leadingContent = {
+                            StickerIconBadge(icon = AppIcons.Copy, tint = SkyBlue)
+                        },
                         modifier = Modifier.clickable {
                             clipboard.setText(AnnotatedString(target.body))
                             onShowMessage(strings.msgCopiedText)
@@ -402,7 +425,9 @@ fun ConversationScreen(
                     )
                     ListItem(
                         headlineContent = { Text(strings.bubbleActionForward) },
-                        leadingContent = { Icon(Icons.Default.Share, contentDescription = null) },
+                        leadingContent = {
+                            StickerIconBadge(icon = Icons.Default.Share, tint = ElectricIndigo)
+                        },
                         modifier = Modifier.clickable {
                             actionTargetMessage = null
                             onForwardText(target.body)
@@ -410,8 +435,10 @@ fun ConversationScreen(
                     )
                     if (!target.isOutgoing) {
                         ListItem(
-                            headlineContent = { Text(strings.bubbleActionSpam) },
-                            leadingContent = { Icon(AppIcons.Block, contentDescription = null, tint = RoseCrimson) },
+                            headlineContent = { Text(strings.bubbleActionSpam, color = TangerineOrange) },
+                            leadingContent = {
+                                StickerIconBadge(icon = AppIcons.Block, tint = TangerineOrange)
+                            },
                             modifier = Modifier.clickable {
                                 actionTargetMessage = null
                                 onBlockSingleMessage(target.id, true)
@@ -420,18 +447,22 @@ fun ConversationScreen(
                     }
                     ListItem(
                         headlineContent = { Text(strings.bubbleActionDetails) },
-                        leadingContent = { Icon(Icons.Default.Info, contentDescription = null) },
+                        leadingContent = {
+                            StickerIconBadge(icon = Icons.Default.Info, tint = SoftViolet)
+                        },
                         modifier = Modifier.clickable {
                             actionTargetMessage = null
                             detailsMessage = target
                         }
                     )
                     ListItem(
-                        headlineContent = { Text(strings.bubbleActionDelete) },
-                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                        headlineContent = { Text(strings.bubbleActionDelete, color = RoseCrimson) },
+                        leadingContent = {
+                            StickerIconBadge(icon = Icons.Default.Delete, tint = RoseCrimson)
+                        },
                         modifier = Modifier.clickable {
                             actionTargetMessage = null
-                            onDeleteSingleMessage(target.id)
+                            pendingDeleteMessageId = target.id
                         }
                     )
                 }
@@ -439,6 +470,42 @@ fun ConversationScreen(
             confirmButton = {
                 TextButton(onClick = { actionTargetMessage = null }) {
                     Text(strings.close)
+                }
+            }
+        )
+    }
+
+    pendingDeleteMessageId?.let { idToDelete ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteMessageId = null },
+            icon = {
+                StickerIconBadge(
+                    icon = Icons.Default.Delete,
+                    tint = RoseCrimson,
+                    size = 42.dp,
+                    iconSize = 24.dp
+                )
+            },
+            title = { Text(strings.confirmDeleteSingleTitle) },
+            text = { Text(strings.confirmDeleteSingleBody) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteSingleMessage(idToDelete)
+                        pendingDeleteMessageId = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = RoseCrimson,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_message_btn")
+                ) {
+                    Text(strings.deleteForever)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteMessageId = null }) {
+                    Text(strings.cancel)
                 }
             }
         )
@@ -453,6 +520,10 @@ fun ConversationScreen(
                     Text(text = "${msg.senderRaw} (${msg.senderType.labelFa})", style = MaterialTheme.typography.bodyMedium)
                     Text(
                         text = PersianFormatters.formatFullDateTime(msg.timestamp, strings.language),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = PersianFormatters.formatDigits("SIM ${msg.simSlot}", strings.language),
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
@@ -563,15 +634,18 @@ private fun MessageBubble(
                         }
                     )
                     if (showSimBadge && message.simSlot > 0) {
-                        Text(
-                            text = PersianFormatters.formatDigits("SIM ${message.simSlot}", strings.language),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isOutgoing) {
-                                Color.White.copy(alpha = 0.75f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                            }
-                        )
+                        val simTint = if (message.simSlot == 2) AmberGold else NeonCyan
+                        Surface(
+                            color = if (isOutgoing) Color.White.copy(alpha = 0.18f) else simTint.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = PersianFormatters.formatDigits("SIM ${message.simSlot}", strings.language),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isOutgoing) Color.White else simTint,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
                     }
                     if (message.partCount > 1) {
                         val partText = if (strings.language == AppLanguage.EN) {
@@ -653,7 +727,7 @@ private fun MessageBubble(
                     Icon(
                         AppIcons.Copy,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        tint = SkyBlue,
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
